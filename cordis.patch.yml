@@ -1,0 +1,7 @@
+# Mounts prompt-vault into a dsh profile.
+- insert:
+    - id: prompt-vault
+      name: dsh-plugin-prompt-vault
+      config:
+        enabled: true
+        # libraryPath: ~/.dsh/prompt-vault/library.jsonl
