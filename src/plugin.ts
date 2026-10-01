@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-session';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -86,8 +86,14 @@ export function apply(ctx: Context, config: Config): void {
         if (!agent) return { kind: 'error', text: '当前没有活跃会话可以注入。' };
         agent.followup(
           createUserMessage({
+            // Session format v4 retired the {kind:'plugin', plugin:<name>} wrapper and
+            // throws on it, so this aborted the session the moment a template was
+            // sent. Producers own their kind as `plugin:<name>` — the shape the
+            // official v3->v4 producerKind() migrates to — which keeps the "the
+            // plugin injected this, the human did not type it" attribution.
+            // dsh-llm's source union predates that and is narrower than its runtime.
             content: [{ type: 'text', text: match.body }],
-            source: { kind: 'plugin', plugin: name, form: 'notice', summary: match.title },
+            source: { kind: `plugin:${name}`, form: 'notice', summary: match.title } as unknown as MessageSource,
           }),
         );
         return { kind: 'success', text: `已把 #${match.id}「${match.title}」作为用户消息注入当前会话。` };
