@@ -11,7 +11,7 @@ import type {} from '@deepseek-ai/dsh-session';
 import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { brandString } from '@deepseek-ai/dsh-brand';
 
 import { importMarkdown, parseLibrary, renderList, renderBody, matchItem, slugify, type PromptItem } from './library.ts';
@@ -46,12 +46,10 @@ export class LibraryStore {
   }
 
   save(items: PromptItem[]): void {
-    mkdirSync(this.path.slice(0, this.path.lastIndexOf(this.platformSep())), { recursive: true });
+    // dirname() handles both separators and relative filenames where a raw
+    // lastIndexOf(sep) would produce '' and crash mkdirSync.
+    mkdirSync(dirname(this.path), { recursive: true });
     writeFileSync(this.path, items.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf8');
-  }
-
-  private platformSep(): string {
-    return process.platform === 'win32' ? '\\' : '/';
   }
 }
 
