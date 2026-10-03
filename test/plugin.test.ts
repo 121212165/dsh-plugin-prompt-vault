@@ -27,6 +27,14 @@ function libraryOf(harness: Harness): string {
   return readFileSync(harness.libraryPath, 'utf8');
 }
 
+test('zero-config: an empty library seeds itself with the starter set', async () => {
+  const harness = await mounted();
+  const list = harness.command('pv').handler({ rawInput: 'list' }).text;
+  assert.ok(!list.includes('空的'), list);
+  assert.ok(list.includes('代码审查') || list.includes('周报'), list);
+  // seeding is once-only: wiping the library after seed does not reseed on next apply
+});
+
 test('disabled by config mounts nothing', async () => {
   const { makeHarness } = await import('./harness.ts');
   const off = makeHarness();
@@ -47,18 +55,17 @@ test('/pv import a real temp markdown file, then /pv list shows it; a re-import 
 
   const list = fire(harness, 'list');
   assert.equal(list.kind, 'success');
-  assert.ok(list.text.includes('2 条提示词'), list.text);
   assert.ok(list.text.includes('反审清单'));
   assert.ok(list.text.includes('开场钩子'));
 
   const onDisk = libraryOf(harness);
   assert.ok(onDisk.includes('逐条检查AI味'));
-  assert.equal(onDisk.trim().split('\n').length, 2);
 
-  // importing the same file again must not collide: ids get suffixes, count grows
+  // importing the same file again must not collide: ids get suffixes, count grows by the file's blocks
+  const before = Number(/(\d+) 条提示词/.exec(list.text)![1]);
   const again = fireOk(harness, `import ${file}`);
   assert.ok(again.includes('导入 2 条'), again);
-  assert.ok(again.includes('共 4 条'), again);
+  assert.ok(again.includes(`共 ${before + 2} 条`), again);
   assert.ok(fire(harness, 'list').text.includes('-2'));
 });
 

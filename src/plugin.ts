@@ -58,6 +58,24 @@ export function apply(ctx: Context, config: Config): void {
   if (!config.enabled) return void log.info('disabled by config');
   const store = new LibraryStore(config.libraryPath);
 
+  // Zero-config: an empty library seeds itself with the bundled starter set,
+  // so /pv list is never an empty screen on first run.
+  if (store.load().length === 0) {
+    try {
+      const seedPath = new URL('../seed/seed-prompts.md', import.meta.url);
+      const seedContent = readFileSync(seedPath, 'utf8');
+      const seeded = importMarkdown(seedContent, new Set());
+      if (seeded.items.length) {
+        const now = new Date().toISOString();
+        const library = seeded.items.map((item): PromptItem => ({ v: 1, ...item, importedAt: now }));
+        store.save(library);
+        log.info(`seeded ${library.length} starter prompts`);
+      }
+    } catch (error) {
+      log.warn(`seed skipped: ${String(error)}`);
+    }
+  }
+
   const items = (): PromptItem[] => store.load();
 
   ctx.commands.register({

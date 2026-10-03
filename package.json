@@ -13,7 +13,8 @@
     },
     "./package.json": "./package.json",
     "./locale/*": "./locale/*",
-    "./icon.svg": "./icon.svg"
+    "./icon.svg": "./icon.svg",
+    "./seed/*": "./seed/*"
   },
   "files": [
     "lib",
@@ -22,7 +23,8 @@
     "README.md",
     "LICENSE",
     "icon.svg",
-    "locale"
+    "locale",
+    "seed"
   ],
   "dsh": {
     "bundle": {
