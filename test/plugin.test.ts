@@ -131,3 +131,21 @@ test('/pv tag persists to disk and unknown verbs get the usage line', async () =
   assert.equal(fire(harness, 'tag 幽灵条目 x').kind, 'error');
   assert.equal(libraryOf(harness).trim().split('\n').length, linesBefore);
 });
+
+test('/pv send counts a use, and /pv list --hot reorders by the tally', async () => {
+  const { harness } = await seeded();
+  const send = harness.command('pv').handler({ rawInput: 'send 反审' });
+  assert.ok(send.text.includes('使用 +1'), send.text);
+
+  const list = harness.command('pv').handler({ rawInput: 'list --hot' }).text;
+  assert.ok(list.includes('按热度'), list);
+  assert.ok(list.includes('用1次'), list);
+
+  // a re-send bumps to 2 and the tally is persisted on disk
+  harness.command('pv').handler({ rawInput: 'send 反审' });
+  const onDisk = libraryOf(harness).split('\n').find((line) => line.includes('反审清单'));
+  assert.ok(onDisk, 'the item is on disk');
+  const item = JSON.parse(onDisk!);
+  assert.equal(item.usedCount, 2);
+  assert.ok(item.lastUsedAt, 'stamped with when it was last sent');
+});

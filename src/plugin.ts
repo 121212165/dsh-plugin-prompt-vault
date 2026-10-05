@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { brandString } from '@deepseek-ai/dsh-brand';
 
-import { importMarkdown, parseLibrary, renderList, renderBody, matchItem, slugify, type PromptItem } from './library.ts';
+import { importMarkdown, markUsed, parseLibrary, renderList, renderBody, matchItem, slugify, type PromptItem } from './library.ts';
 
 export const name = 'prompt-vault';
 export const inject = ['commands', 'llm', 'agents'];
@@ -80,13 +80,15 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.commands.register({
     name: 'pv',
-    description: '提示词弹药库：/pv [过滤词] 列表 · /pv show <id> · /pv send <id> · /pv import <markdown文件>',
-    input: { hint: '[过滤词|show <id>|send <id>|import <file>]' },
+    description: '提示词弹药库：/pv [过滤词] 列表（加 --hot 按使用热度排序） · /pv show <id> · /pv send <id> · /pv import <markdown文件>',
+    input: { hint: '[过滤词|--hot|show <id>|send <id>|import <file>]' },
     handler: ({ rawInput }) => {
       const input = String(rawInput ?? '').trim();
-      const [verb, ...rest] = input.split(/\s+/);
+      const hot = /\s--hot\b|^--hot\b/.test(input);
+      const cleaned = input.replace(/\s--hot\b|^--hot\b/, '').trim();
+      const [verb, ...rest] = cleaned.split(/\s+/);
       const argument = rest.join(' ');
-      if (!verb || verb === 'list') return { kind: 'success', text: renderList(items(), verb === 'list' ? argument : undefined) };
+      if (!verb || verb === 'list') return { kind: 'success', text: renderList(items(), verb === 'list' && argument ? argument : cleaned && verb !== 'list' ? cleaned : undefined, hot) };
       if (verb === 'show') {
         const match = matchItem(items(), argument);
         if (match === 'missing') return { kind: 'error', text: `没有叫 ${argument} 的提示词。/pv 先看列表。` };
@@ -112,7 +114,8 @@ export function apply(ctx: Context, config: Config): void {
             source: { kind: `plugin:${name}`, form: 'notice', summary: match.title } as unknown as MessageSource,
           }),
         );
-        return { kind: 'success', text: `已把 #${match.id}「${match.title}」作为用户消息注入当前会话。` };
+        store.save(markUsed(items(), match.id));
+        return { kind: 'success', text: `已把 #${match.id}「${match.title}」作为用户消息注入当前会话（使用 +1）。` };
       }
       if (verb === 'import') {
         const file = expandHome(argument);

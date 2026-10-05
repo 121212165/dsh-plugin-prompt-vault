@@ -9,6 +9,10 @@ export interface PromptItem {
   tags: string[];
   body: string;
   importedAt: string;
+  /** usage tally, optional-in-v1: lines written before /pv send counted simply
+   * lack the key, and a bad value only loses the tally. */
+  usedCount?: number;
+  lastUsedAt?: string;
 }
 
 export interface ImportResult {
@@ -69,7 +73,10 @@ export function parseLibraryLine(line: string): PromptItem | null {
   if (typeof record.id !== 'string' || typeof record.title !== 'string' || typeof record.body !== 'string') return null;
   if (!Array.isArray(record.tags)) return null;
   if (typeof record.importedAt !== 'string') return null;
-  return value as unknown as PromptItem;
+  const item = value as unknown as PromptItem;
+  if (item.usedCount !== undefined && (typeof item.usedCount !== 'number' || !Number.isInteger(item.usedCount) || item.usedCount < 0)) delete item.usedCount;
+  if (item.lastUsedAt !== undefined && (typeof item.lastUsedAt !== 'string' || !Number.isFinite(Date.parse(item.lastUsedAt)))) delete item.lastUsedAt;
+  return item;
 }
 
 export function parseLibrary(content: string): { items: PromptItem[]; skipped: number } {
@@ -90,14 +97,24 @@ export interface ListedPrompt {
   chars: number;
 }
 
-export function renderList(items: PromptItem[], filter?: string): string {
+/** `/pv list --hot` orders by the usage tally instead of library order. */
+export function renderList(items: PromptItem[], filter?: string, hot = false): string {
   const needle = filter?.trim().toLowerCase();
   const visible = needle
     ? items.filter((item) => `${item.title}\u0000${item.id}\u0000${item.tags.join(',')}`.toLowerCase().includes(needle))
     : items;
   if (!visible.length) return needle ? `没有匹配 "${filter}" 的提示词。` : '弹药库还是空的。/pv import <markdown> 先导入一批。';
-  const lines = visible.map((item) => `  ${item.id.padEnd(28)} ${item.title}${item.tags.length ? `  [${item.tags.join(', ')}]` : ''} · ${item.body.length} 字`);
-  return `${visible.length} 条提示词:\n${lines.join('\n')}`;
+  const ordered = hot ? [...visible].sort((a, b) => (b.usedCount ?? 0) - (a.usedCount ?? 0)) : visible;
+  const lines = ordered.map((item) => {
+    const uses = item.usedCount ? ` · 用${item.usedCount}次` : '';
+    return `  ${item.id.padEnd(28)} ${item.title}${item.tags.length ? `  [${item.tags.join(', ')}]` : ''} · ${item.body.length} 字${uses}`;
+  });
+  return `${visible.length} 条提示词${hot ? '（按热度）' : ''}:\n${lines.join('\n')}`;
+}
+
+/** Bump the tally on send. Pure: returns the new array, caller persists. */
+export function markUsed(items: PromptItem[], id: string, now = new Date()): PromptItem[] {
+  return items.map((item) => (item.id === id ? { ...item, usedCount: (item.usedCount ?? 0) + 1, lastUsedAt: now.toISOString() } : item));
 }
 
 /** Exact id first, then unique prefix/substring; ambiguous ids fail loud. */
