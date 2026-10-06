@@ -1,5 +1,8 @@
 # dsh-plugin-prompt-vault
 
+> 🧩 **dsh 插件家族**（22 件）：总目录 **[dsh-plugin-family](https://github.com/121212165/dsh-plugin-family)** ｜ 明星插件：**[ide-hub](https://github.com/121212165/dsh-plugin-ide-hub)** 跨 IDE 统一管理 · **[task-forge](https://github.com/121212165/dsh-plugin-task-forge)** 跨窗口无损交接 · **[quota](https://github.com/121212165/dsh-plugin-quota)** 实时用量仪表
+
+
 **EN** · Personal prompt library inside the harness: `/pv` imports tagged templates (`## title` + body), lists and shows them, and sends one into the current session as a user message. · 13 `node --test` green, `npm run check` passing · **mount and activation verified live** in dsh 0.1.7-alpha.1 (headless profile) · the send path now writes a producer-owned source kind, after v0.1.0's `{kind:"plugin"}` wrapper turned out to abort the session (A/B evidence recorded below).
 
 DeepSeek Harness (dsh) 插件：把个人提示词资产库带进 harness。用 `## 标题 + 正文` 的 markdown 文件批量导入，`/pv` 列表/检索/打标，`/pv send` 把一条提示词直接作为用户消息注入当前会话（官方 cookbook 验证过的 `ctx.agents.followup()` 面）。
