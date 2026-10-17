@@ -35,6 +35,42 @@ test('zero-config: an empty library seeds itself with the starter set', async ()
   // seeding is once-only: wiping the library after seed does not reseed on next apply
 });
 
+test('agents get prompt_save and prompt_get', async () => {
+  const harness = await mounted();
+  assert.deepEqual(harness.tools.map((tool) => tool.name).sort(), ['prompt_get', 'prompt_save']);
+});
+
+test('prompt_save writes the library and prompt_get recalls by id and prefix', async () => {
+  const harness = await mounted();
+  const saved = await harness.tool('prompt_save').execute({ title: '反审清单 PROBE', body: '逐条检查AI味', tags: ['quality'] });
+  assert.match(saved, /#反审清单-probe/, saved);
+
+  const got = await harness.tool('prompt_get').execute({ id: '反审清单-prob' });
+  assert.ok(got.includes('逐条检查AI味'), got);
+  assert.ok(got.includes('反审清单 PROBE'), got);
+
+  const list = fireOk(harness, 'list probe');
+  assert.ok(list.includes('反审清单-probe'), list);
+  assert.ok(libraryOf(harness).includes('quality'), 'tags persisted');
+});
+
+test('prompt_save refuses empty input and slug-hops on a duplicate id', async () => {
+  const harness = await mounted();
+  const linesBefore = libraryOf(harness).trim().split('\n').length;
+  const empty = await harness.tool('prompt_save').execute({ title: ' ', body: '  ' });
+  assert.ok(empty.includes('未入库'), empty);
+  assert.equal(libraryOf(harness).trim().split('\n').length, linesBefore, 'nothing written');
+
+  const first = await harness.tool('prompt_save').execute({ title: '同一个标题', body: '第一次' });
+  const second = await harness.tool('prompt_save').execute({ title: '同一个标题', body: '第二次' });
+  assert.match(first, /#同一个标题「/);
+  assert.match(second, /-2/, 'second save gets a suffix id');
+
+  assert.ok((await harness.tool('prompt_get').execute({ id: '同一个标题-2' })).includes('第二次'));
+  const miss = await harness.tool('prompt_get').execute({ id: '幽灵' });
+  assert.ok(miss.includes('没有'), miss);
+});
+
 test('disabled by config mounts nothing', async () => {
   const { makeHarness } = await import('./harness.ts');
   const off = makeHarness();

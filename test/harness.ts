@@ -30,14 +30,21 @@ export interface CapturedFollowup {
   };
 }
 
+export interface CapturedTool {
+  name: string;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}
+
 export interface Harness {
   commands: CapturedCommand[];
+  tools: CapturedTool[];
   followups: CapturedFollowup[];
   /** Temp file backing LibraryStore for this mount — wiped after tests. */
   libraryPath: string;
   /** Mounts the real apply() against this harness once; later calls are no-ops. */
   apply(config: Record<string, unknown>): Promise<void>;
   command(name: string): CapturedCommand;
+  tool(name: string): CapturedTool;
 }
 
 export interface HarnessOptions {
@@ -47,6 +54,7 @@ export interface HarnessOptions {
 
 export function makeHarness(options: HarnessOptions = {}): Harness {
   const commands: CapturedCommand[] = [];
+  const tools: CapturedTool[] = [];
   const followups: CapturedFollowup[] = [];
 
   const agent = {
@@ -65,6 +73,11 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
         commands.push(definition);
       },
     },
+    tools: {
+      register(definition: CapturedTool) {
+        tools.push(definition);
+      },
+    },
     // apply() probes get('client-session') first, then list()[0]
     agents:
       options.agent === false
@@ -81,6 +94,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
 
   const harness: Harness = {
     commands,
+    tools,
     followups,
     libraryPath,
     apply(config: Record<string, unknown>) {
@@ -90,6 +104,11 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     command(name: string): CapturedCommand {
       const found = commands.find((candidate) => candidate.name === name);
       if (!found) throw new Error(`command ${name} was never registered`);
+      return found;
+    },
+    tool(name: string): CapturedTool {
+      const found = tools.find((candidate) => candidate.name === name);
+      if (!found) throw new Error(`tool ${name} was never registered`);
       return found;
     },
   };

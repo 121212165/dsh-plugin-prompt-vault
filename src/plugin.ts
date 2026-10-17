@@ -8,8 +8,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-tools';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { brandString } from '@deepseek-ai/dsh-brand';
@@ -17,7 +19,7 @@ import { brandString } from '@deepseek-ai/dsh-brand';
 import { importMarkdown, markUsed, parseLibrary, renderList, renderBody, matchItem, slugify, type PromptItem } from './library.ts';
 
 export const name = 'prompt-vault';
-export const inject = ['commands', 'llm', 'agents'];
+export const inject = ['commands', 'llm', 'agents', 'tools'];
 
 export interface Config {
   enabled: boolean;
@@ -33,8 +35,43 @@ export function expandHome(path: string): string {
   return path.startsWith('~') ? join(homedir(), path.slice(1)) : path;
 }
 
+export const LOCK_TIMEOUT_MS = 400;
+export const LOCK_STALE_MS = 5000;
+
+/** Exclusive-create advisory lock, the pinboard family's mutate pattern: spin
+ * until the deadline, take over a stale older than LOCK_STALE_MS, degrade to
+ * an unlocked write when busy. */
+export function acquireLock(lockPath: string): boolean {
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lockPath, 'wx'));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return true;
+      if (Date.now() >= deadline) return false;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
+      } catch {
+        // vanished or lost the takeover race — retry the create instead
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+}
+
+function releaseLock(lockPath: string): void {
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    // nothing to clean or a concurrent releaser got there first
+  }
+}
+
 export class LibraryStore {
   readonly path: string;
+  /** set by apply() so lock degradation is visible in the plugin log */
+  warn?: (message: string) => void;
 
   constructor(libraryPath: string | undefined) {
     this.path = libraryPath ? expandHome(libraryPath) : join(homedir(), '.dsh', 'prompt-vault', 'library.jsonl');
@@ -48,8 +85,27 @@ export class LibraryStore {
   save(items: PromptItem[]): void {
     // dirname() handles both separators and relative filenames where a raw
     // lastIndexOf(sep) would produce '' and crash mkdirSync.
+    const dir = dirname(this.path);
+    mkdirSync(dir, { recursive: true });
+    // temp+rename: a crash or a concurrent reader never sees a torn library
+    const tmp = join(dir, `.library-${process.pid}-${Date.now()}.tmp`);
+    writeFileSync(tmp, items.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf8');
+    renameSync(tmp, this.path);
+  }
+
+  /** The one write path: load-modify-write under the advisory lock, per family
+   * convention (pinboard FactStore/PinStore), so concurrent processes each
+   * keep their line. */
+  mutate<T>(fn: (view: { load(): PromptItem[]; save(items: PromptItem[]): void }) => T): T {
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, items.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf8');
+    const lockPath = `${this.path}.lock`;
+    const locked = acquireLock(lockPath);
+    if (!locked) this.warn?.('prompt-vault lock busy — saved without lock');
+    try {
+      return fn({ load: () => this.load(), save: (items) => this.save(items) });
+    } finally {
+      if (locked) releaseLock(lockPath);
+    }
   }
 }
 
@@ -57,6 +113,7 @@ export function apply(ctx: Context, config: Config): void {
   const log = ctx.logger('prompt-vault');
   if (!config.enabled) return void log.info('disabled by config');
   const store = new LibraryStore(config.libraryPath);
+  store.warn = (message) => log.warn(message);
 
   // Zero-config: an empty library seeds itself with the bundled starter set,
   // so /pv list is never an empty screen on first run.
@@ -68,7 +125,7 @@ export function apply(ctx: Context, config: Config): void {
       if (seeded.items.length) {
         const now = new Date().toISOString();
         const library = seeded.items.map((item): PromptItem => ({ v: 1, ...item, importedAt: now }));
-        store.save(library);
+        store.mutate((view) => view.save([...view.load(), ...library]));
         log.info(`seeded ${library.length} starter prompts`);
       }
     } catch (error) {
@@ -114,7 +171,7 @@ export function apply(ctx: Context, config: Config): void {
             source: { kind: `plugin:${name}`, form: 'notice', summary: match.title } as unknown as MessageSource,
           }),
         );
-        store.save(markUsed(items(), match.id));
+        store.mutate((view) => view.save(markUsed(view.load(), match.id)));
         return { kind: 'success', text: `已把 #${match.id}「${match.title}」作为用户消息注入当前会话（使用 +1）。` };
       }
       if (verb === 'import') {
@@ -123,24 +180,93 @@ export function apply(ctx: Context, config: Config): void {
         const used = new Set(items().map((item) => item.id));
         const result = importMarkdown(readFileSync(file, 'utf8'), used);
         if (!result.items.length) return { kind: 'error', text: `没有解析出 "## 标题 + 正文" 的块（跳过 ${result.skippedHeadings} 个）。` };
-        const library = items();
         const now = new Date().toISOString();
-        for (const item of result.items) library.push({ v: 1, ...item, importedAt: now });
-        store.save(library);
-        return { kind: 'success', text: `导入 ${result.items.length} 条（跳过 ${result.skippedHeadings} 个空块），弹药库共 ${library.length} 条。` };
+        store.mutate((view) => {
+          const onDisk = view.load();
+          const used = new Set(onDisk.map((item) => item.id));
+          for (const item of result.items) {
+            if (used.has(item.id)) continue;
+            onDisk.push({ v: 1, ...item, importedAt: now });
+            used.add(item.id);
+          }
+          view.save(onDisk);
+        });
+        return { kind: 'success', text: `导入 ${result.items.length} 条（跳过 ${result.skippedHeadings} 个空块），弹药库共 ${items().length} 条。` };
       }
       if (verb === 'tag') {
         const [id, ...tags] = rest;
         const library = items();
         const match = matchItem(library, id ?? '');
         if (match === 'missing' || match === 'ambiguous') return { kind: 'error', text: `定位不到 ${id}` };
-        match.tags = [...new Set([...match.tags, ...tags.map((tag) => tag.replace(/^#/, ''))])];
-        store.save(library);
-        return { kind: 'success', text: renderBody(match) };
+        const fresh = [...new Set([...match.tags, ...tags.map((tag) => tag.replace(/^#/, ''))])];
+        store.mutate((view) => view.save(view.load().map((item) => (item.id === match.id ? { ...item, tags: fresh } : item))));
+        return { kind: 'success', text: renderBody({ ...match, tags: fresh }) };
       }
       return { kind: 'error', text: `看不懂 "${verb}"。用法：/pv [过滤词] · show <id> · send <id> · import <file> · tag <id> <tag...>` };
     },
   });
+
+  ctx.tools.register(
+    defineTool({
+      name: 'prompt_save',
+      description: '把一条可复用的提示词存进提示词弹药库（跨会话，供 prompt_get 取回）。用户说"把这个提示词存档/复用"时用它。',
+      parameters: {
+        title: { type: 'string', required: true, description: '短标题，入库 id 由它生成' },
+        body: { type: 'string', required: true, description: '提示词正文，可多行' },
+        tags: { type: 'array', items: { type: 'string' }, description: '可选标签' },
+      },
+      output: {
+        schema: { type: 'string' } as const,
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      presentCall: () => ({ card: 'generic' as const, title: '存提示词', kind: 'edit' as const }),
+      presentResult: (_args, value) => ({
+        card: 'generic' as const,
+        title: String(value).split('\n')[0]!.slice(0, 60),
+        kind: 'edit' as const,
+        rawInput: value,
+      }),
+      async execute(args) {
+        const title = String(args.title ?? '').replace(/\s+/g, ' ').trim();
+        const body = String(args.body ?? '').trim();
+        if (!title || !body) return '标题或正文为空，未入库。各给一句 title 和 body。';
+        const tags = [...new Set((args.tags ?? []).map((tag) => String(tag).replace(/^#/, '').trim()).filter(Boolean))];
+        let id = '';
+        store.mutate((view) => {
+          id = slugify(title, new Set(view.load().map((item) => item.id)));
+          view.save([...view.load(), { v: 1, id, title, tags, body, importedAt: new Date().toISOString() }]);
+        });
+        return `已存档 #${id}「${title}」（取回用 prompt_get ${id}）`;
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'prompt_get',
+      description: '取回存档的提示词（id 或唯一前缀/子串定位）。拿到的是全文，直接按它执行或转给用户。',
+      parameters: {
+        id: { type: 'string', required: true, description: 'id、id 前缀或标题子串' },
+      },
+      output: {
+        schema: { type: 'string' } as const,
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      presentCall: () => ({ card: 'generic' as const, title: '取提示词', kind: 'search' as const }),
+      presentResult: (_args, value) => ({
+        card: 'generic' as const,
+        title: String(value).split('\n')[0]!.slice(0, 60),
+        kind: 'search' as const,
+        rawInput: value,
+      }),
+      async execute(args) {
+        const match = matchItem(store.load(), String(args.id ?? ''));
+        if (match === 'missing') return '没有这条提示词。用更完整的 id 或标题子串再取。';
+        if (match === 'ambiguous') return '匹配到多条，用一个更长的唯一前缀。';
+        return renderBody(match);
+      },
+    }),
+  );
 
   log.info(`mounted · ${store.path}`);
 }
