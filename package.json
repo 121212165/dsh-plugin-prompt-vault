@@ -29,6 +29,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "catalog": {
+      "category": "会话与知识库",
+      "blurb": "提示词弹药库：markdown 导入、标签、使用计数，自带 8 条中文种子提示词",
+      "entries": "`/pv`"
     }
   },
   "engines": {
