@@ -1,18 +1,15 @@
 /** Shared assembly-layer harness: a scripted mock dsh context that the real
  * `apply()` wires against, so the /pv command surface is exercised over a real
- * temp library file — the wire coverage the family audit found missing
- * everywhere. Pattern adopted from dsh-auto-review's mountHarness (222★),
- * rebuilt on node:test after dsh-plugin-task-forge (the family's first port).
+ * temp library file. The mock itself lives in @dsh-family/kit; this file adds
+ * prompt-vault's agent stub, followup capture and command helpers.
  *
- * prompt-vault only touches ctx.logger / ctx.commands / ctx.agents, so that is
- * all the mock provides — the real @deepseek-ai/dsh-llm createUserMessage and
- * dsh-brand brandString are used unmocked.
+ * The real @deepseek-ai/dsh-llm createUserMessage and dsh-brand brandString are
+ * used unmocked.
  * @module test/harness */
 
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after } from 'node:test';
+
+import { applyOnce, createMockCtx, tempDir } from '@dsh-family/kit/kit/test-harness';
 
 export interface CapturedCommand {
   name: string;
@@ -53,8 +50,6 @@ export interface HarnessOptions {
 }
 
 export function makeHarness(options: HarnessOptions = {}): Harness {
-  const commands: CapturedCommand[] = [];
-  const tools: CapturedTool[] = [];
   const followups: CapturedFollowup[] = [];
 
   const agent = {
@@ -64,55 +59,37 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     },
   };
 
-  const ctx = {
-    logger(_name: string) {
-      return { info() {}, warn() {} };
-    },
-    commands: {
-      register(definition: CapturedCommand) {
-        commands.push(definition);
-      },
-    },
-    tools: {
-      register(definition: CapturedTool) {
-        tools.push(definition);
-      },
-    },
+  const mock = createMockCtx<CapturedCommand, CapturedTool, never>({
     // apply() probes get('client-session') first, then list()[0]
-    agents:
-      options.agent === false
-        ? { get: () => undefined, list: () => [] }
-        : { get: () => undefined, list: () => [agent] },
-  };
+    agents: options.agent === false ? { get: () => undefined, list: () => [] } : { get: () => undefined, list: () => [agent] },
+  });
 
-  const dir = mkdtempSync(join(tmpdir(), 'prompt-vault-wire-'));
-  const libraryPath = join(dir, 'library.jsonl');
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  const libraryPath = join(tempDir('prompt-vault-wire-'), 'library.jsonl');
 
   // apply once per harness — a second call would double-register /pv.
-  let applied: Promise<void> | null = null;
+  let pending: Record<string, unknown> = {};
+  let mounted = false;
+  const applied = applyOnce(() =>
+    import('../src/plugin.ts').then(({ apply }) =>
+      apply(mock.ctx as never, { enabled: true, libraryPath, ...pending } as never),
+    ),
+  );
 
-  const harness: Harness = {
-    commands,
-    tools,
+  return {
+    commands: mock.commands,
+    tools: mock.tools,
     followups,
     libraryPath,
     apply(config: Record<string, unknown>) {
-      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, { enabled: true, libraryPath, ...config } as never));
-      return applied;
+      if (!mounted) {
+        mounted = true;
+        pending = config;
+      }
+      return applied();
     },
-    command(name: string): CapturedCommand {
-      const found = commands.find((candidate) => candidate.name === name);
-      if (!found) throw new Error(`command ${name} was never registered`);
-      return found;
-    },
-    tool(name: string): CapturedTool {
-      const found = tools.find((candidate) => candidate.name === name);
-      if (!found) throw new Error(`tool ${name} was never registered`);
-      return found;
-    },
+    command: mock.command,
+    tool: mock.tool,
   };
-  return harness;
 }
 
 /** Convenience: mount the harness and return it. */
