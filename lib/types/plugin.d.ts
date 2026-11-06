@@ -13,13 +13,13 @@ export interface Config {
     enabled: boolean;
     libraryPath?: string;
 }
-export declare const Config: Schema<Schemastery.ObjectS<{
-    enabled: Schema<boolean, boolean>;
-    libraryPath: Schema<string, string>;
-}>, Schemastery.ObjectT<{
-    enabled: Schema<boolean, boolean>;
-    libraryPath: Schema<string, string>;
-}>>;
+export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    libraryPath: Schema<string, string, "plain">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    libraryPath: Schema<string, string, "plain">;
+}>>, "plain">;
 export declare function expandHome(path: string): string;
 export declare const LOCK_TIMEOUT_MS = 400;
 export declare const LOCK_STALE_MS = 5000;
